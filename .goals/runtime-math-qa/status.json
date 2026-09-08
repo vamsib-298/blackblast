@@ -1,0 +1,76 @@
+{
+  "goal_id": "runtime-math-qa",
+  "status": "blocked_release_gates",
+  "iteration": 1,
+  "builder_model": "Claude Sonnet 4.6",
+  "inspector_model": "Claude Haiku 4.5",
+  "initial_sha": "5dc645f",
+  "created_at": "2026-09-08",
+  "baseline": "37 core tests executed; 3 failures; product unchanged at mission start",
+  "current_verification": {
+    "core_tests": 46,
+    "android_debug_tests": 45,
+    "release_process_tests": 2,
+    "final_android_failures": 0,
+    "final_android_skips": 0,
+    "final_report": "artifacts/test-results/android-20260908-152906.txt",
+    "fresh_build_log": "artifacts/qa/fresh-build.txt",
+    "qa_report": "docs/qa/runtime-audit.md",
+    "readiness": "NOT READY",
+    "independent_review": "Scoped read-only review performed; objections checked against source/XML. No full-goal PASS obtained.",
+    "blockers": ["Physical-device performance and audio/haptics not verified", "Poor emulator frame-time samples remain unresolved", "Older API runtime and hour-long endurance unverified", "Production signing/store gate not authorized or supplied", "Human engagement and external research unavailable", "Historical startup ANR root cause unknown"]
+  },
+  "constraints": "No commits/push; preserve existing worktree and personal data; isolated Android QA only",
+  "history": [
+    {
+      "slice": "iteration1-bounded",
+      "date": "2026-09-08",
+      "outcome": "NOT_COMPLETED_GOAL — bounded slice only",
+      "before_core_tests": { "total": 37, "failures": 3 },
+      "after_core_tests": { "total": 41, "failures": 0 },
+      "math_verification_before": { "total": 16, "failures": 3 },
+      "math_verification_after": { "total": 20, "failures": 0 },
+      "new_tests_added": 4,
+      "defects_fixed": [
+        "fourQuarterTurnsAreTheIdentityAndOrientationsAreDistinct: oracle assumed 4 distinct orientations for all non-square shapes; correct counts are 1/2/4 by symmetry",
+        "pulseRequiresFullChargeAndScoresFivePerClearedCell: board indices 0..8 is not a 3x3 grid; fixed to true 3x3 at rows 0-2 cols 0-2",
+        "refilledHandsBelowTheScoreThresholdUseTheSmallShapePool: second-iteration placements collided with first (NPE on null!!); fixed to single non-overlapping refill cycle"
+      ],
+      "production_defects_found": "none — all 3 were test oracle errors",
+      "oracle_strengthening": [
+        "referenceIsGameOver now uses refCells+refCanPlace (no GameEngine.canPlace)",
+        "referenceHint now uses refCells+refCanPlace+refFullLines (no production methods)",
+        "TestOracle.kt created with shared referenceRotate/refCells/refCanPlace/refFullLines"
+      ],
+      "new_property_tests": [
+        "placementAcceptsRejectsAndOutOfBoundsCountsMatchIndependentReference",
+        "rotatedOnlyFitDetectedByRefCanPlace",
+        "refillThresholdUsesLargerPoolAtOrAboveScore300",
+        "undoBudgetDecreasesAndIsBlockedAfterThreeExhausted"
+      ],
+      "evidence_paths": [
+        "artifacts/qa/math-before/ (baseline XML + run log)",
+        "artifacts/qa/TEST-*.xml (final XML reports)",
+        "artifacts/qa/core-test-full-after.txt",
+        "docs/qa/algorithms.md"
+      ],
+      "remaining_gaps": [
+        "Daily seed collision check across 4-year window",
+        "Hint performance latency benchmark",
+        "Exhaustive game-over property solver",
+        "All UI/touch/animation algorithms UNVERIFIED",
+        "Release APK not built or tested",
+        "Startup ANR root cause still UNKNOWN"
+      ],
+      "files_changed": [
+        "core/src/test/kotlin/com/blackblast/core/TestOracle.kt (new)",
+        "core/src/test/kotlin/com/blackblast/core/MathVerificationTest.kt",
+        "core/src/test/kotlin/com/blackblast/core/MathVerificationGameplayTest.kt",
+        "artifacts/qa/math-before/ (new directory, preserved baseline)",
+        "artifacts/qa/TEST-*.xml (final evidence)",
+        "docs/qa/algorithms.md (new)",
+        ".goals/runtime-math-qa/status.json"
+      ]
+    }
+  ]
+}

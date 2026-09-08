@@ -4,9 +4,9 @@ param(
     [string]$Serial,
 
     [ValidatePattern('^[A-Za-z0-9_.,#]+$')]
-    [string]$TestClass = 'com.blackblast.app.GameScreenTest,com.blackblast.app.GameStoreTest,com.blackblast.app.MainActivityTest',
+    [string]$TestClass = 'com.blackblast.app.GameScreenTest,com.blackblast.app.GameStoreTest,com.blackblast.app.GameViewModelTest,com.blackblast.app.MainActivityTest,com.blackblast.app.IoErrorIsolationTest,com.blackblast.app.LifecycleEffectTest,com.blackblast.app.StorageWriteReliabilityTest,com.blackblast.app.RecoveryScreenTest,com.blackblast.app.RetryScreenTest,com.blackblast.app.RuntimeJourneyTest,com.blackblast.app.AlgorithmTimingTest,com.blackblast.app.CampaignProgressTest,com.blackblast.app.LevelJourneyTest,com.blackblast.app.IntegratedStageProgressTest',
 
-    [int]$ExpectedTests = 13
+    [int]$ExpectedTests = 79
 )
 
 $ErrorActionPreference = 'Stop'

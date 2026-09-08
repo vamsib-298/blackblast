@@ -1,0 +1,9 @@
+def auditBuildId = System.currentTimeMillis()
+
+gradle.beforeProject { currentProject ->
+    def destination = new File(currentProject.rootProject.projectDir, "artifacts/qa/fresh-build-${auditBuildId}/${currentProject.name}")
+    currentProject.layout.buildDirectory.set(destination)
+    if (currentProject == currentProject.rootProject) {
+        println "Fresh QA output root: ${destination.parentFile}"
+    }
+}

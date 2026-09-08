@@ -5,12 +5,13 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.Undo
+import androidx.compose.material.icons.automirrored.outlined.VolumeUp
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.EmojiEvents
 import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Vibration
-import androidx.compose.material.icons.outlined.VolumeUp
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -40,17 +41,17 @@ fun PauseDialog(
                     ToolIcon(Icons.Outlined.Close, "Resume game", onResume)
                 }
                 HorizontalDivider(color = BlastColors.muted.copy(alpha = 0.15f))
-                SettingToggle(Icons.Outlined.VolumeUp, "Sound", progress.sound, onSound, "sound_toggle")
+                SettingToggle(Icons.AutoMirrored.Outlined.VolumeUp, "Sound", progress.sound, onSound, "sound_toggle")
                 SettingToggle(Icons.Outlined.Vibration, "Haptics", progress.haptics, onHaptics, "haptics_toggle")
                 Button(onClick = onResume, shape = RoundedCornerShape(6.dp), modifier = Modifier.fillMaxWidth().height(52.dp).testTag("resume")) {
                     Icon(Icons.Outlined.PlayArrow, null)
                     Spacer(Modifier.width(8.dp))
                     Text("Resume")
                 }
-                TextButton(onClick = onRestart, modifier = Modifier.fillMaxWidth().testTag("restart_request")) {
+                TextButton(onClick = onRestart, enabled = progress.canRetry, modifier = Modifier.fillMaxWidth().testTag("restart_request")) {
                     Icon(Icons.Outlined.Refresh, null, Modifier.size(18.dp))
                     Spacer(Modifier.width(8.dp))
-                    Text("New run")
+                    Text("Retry level")
                 }
             }
         }
@@ -68,7 +69,7 @@ private fun SettingToggle(icon: ImageVector, name: String, enabled: Boolean, onC
 }
 
 @Composable
-fun ResultDialog(progress: PlayerProgress, onRestart: () -> Unit, onModeChange: (GameMode) -> Unit) {
+fun ResultDialog(progress: PlayerProgress, onRestart: () -> Unit, onModeChange: (GameMode) -> Unit, onUndo: () -> Boolean = { false }) {
     val game = progress.current
     Dialog(onDismissRequest = {}) {
         Surface(shape = RoundedCornerShape(8.dp), color = BlastColors.surface) {
@@ -91,7 +92,14 @@ fun ResultDialog(progress: PlayerProgress, onRestart: () -> Unit, onModeChange: 
                         Text(scoreText(progress.best), style = MaterialTheme.typography.titleLarge)
                     }
                 }
-                Button(onClick = onRestart, shape = RoundedCornerShape(6.dp), modifier = Modifier.fillMaxWidth().height(52.dp).testTag("play_again")) {
+                if (progress.canUndo) {
+                    Button(onClick = { onUndo() }, shape = RoundedCornerShape(6.dp), modifier = Modifier.fillMaxWidth().height(52.dp).testTag("rescue_undo")) {
+                        Icon(Icons.AutoMirrored.Outlined.Undo, null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Undo last move")
+                    }
+                }
+                OutlinedButton(onClick = onRestart, shape = RoundedCornerShape(6.dp), modifier = Modifier.fillMaxWidth().height(52.dp).testTag("play_again")) {
                     Icon(Icons.Outlined.Refresh, null)
                     Spacer(Modifier.width(8.dp))
                     Text("Play again")

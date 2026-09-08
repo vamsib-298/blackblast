@@ -10,6 +10,9 @@ import kotlinx.serialization.json.Json
 const val BOARD_SIZE = 8
 const val PULSE_CAPACITY = 6
 const val DAILY_TARGET = 12
+const val MAX_UNDOS = 3
+const val MAX_SCORE = Long.MAX_VALUE / 2
+const val MAX_COUNTER = Int.MAX_VALUE / 2
 
 data class Cell(val row: Int, val column: Int)
 
@@ -47,14 +50,29 @@ object Shapes {
         shape("Tall line", "#", "#", "#", "#"),
         shape("Large square", "###", "###", "###"),
     )
+
+    val orientations = all.map { shape ->
+        buildList {
+            var current = shape
+            repeat(4) {
+                add(current)
+                val height = current.height
+                current = Shape(
+                    shape.name,
+                    current.cells.map { Cell(it.column, height - 1 - it.row) }
+                        .sortedWith(compareBy(Cell::row, Cell::column)),
+                )
+            }
+        }
+    }
 }
 
 @Serializable
-enum class GameMode { FLOW, DAILY }
+enum class GameMode { FLOW, DAILY, LEVELS }
 
 @Serializable
-data class Piece(val shapeId: Int, val color: Int) {
-    val shape: Shape get() = Shapes.all[shapeId]
+data class Piece(val shapeId: Int, val color: Int, val rotation: Int = 0) {
+    val shape: Shape get() = Shapes.orientations[shapeId][rotation]
 }
 
 @Serializable
@@ -70,10 +88,31 @@ data class GameState(
     val mode: GameMode = GameMode.FLOW,
     val challengeId: String = "",
     val version: Int = 1,
+    val undosRemaining: Int = MAX_UNDOS,
+    val levelNumber: Int = 0,
 ) {
-    val isWon: Boolean get() = mode == GameMode.DAILY && lines >= DAILY_TARGET
-    val canPulse: Boolean get() = !isWon && charge == PULSE_CAPACITY && board.any { it != 0 }
+    val level: LevelDefinition? get() = if (levelNumber > 0) Levels.get(levelNumber, mode) else null
+    val movesRemaining: Int? get() = level?.let { (it.moveLimit - moves).coerceAtLeast(0) }
+    val isWon: Boolean get() = level?.let { moves <= it.moveLimit && it.current(this) >= it.target }
+        ?: (mode == GameMode.DAILY && lines >= DAILY_TARGET)
+    val isOutOfMoves: Boolean get() = level != null && !isWon && movesRemaining == 0
+    val canPulse: Boolean get() = !isWon && !isOutOfMoves && charge == PULSE_CAPACITY && board.any { it != 0 } &&
+        (level == null || tray.filterNotNull().any { GameEngine.fitsAnyRotation(board, it) })
 }
+
+@Serializable
+data class UndoCheckpoint(val before: GameState, val after: GameState)
+
+data class PlacementHint(val slot: Int, val row: Int, val column: Int, val rotation: Int, val lines: Int)
+
+data class PlacementForecast(
+    val board: List<Int>,
+    val placed: Set<Int>,
+    val cleared: Set<Int>,
+    val points: Long,
+    val lineCount: Int,
+    val combo: Int,
+)
 
 data class MoveResult(
     val state: GameState,
@@ -89,7 +128,21 @@ object GameEngine {
         mode: GameMode = GameMode.FLOW,
         seed: Long = System.nanoTime(),
         challengeId: String = "",
-    ): GameState = refill(GameState(mode = mode, randomState = seed, challengeId = challengeId))
+    ): GameState = if (mode == GameMode.LEVELS) level(1) else refill(GameState(mode = mode, randomState = seed, challengeId = challengeId))
+
+    fun level(number: Int): GameState {
+        val definition = requireNotNull(Levels.get(number)) { "Unknown level: $number" }
+        return refill(GameState(board = definition.startingBoard(), mode = GameMode.LEVELS,
+            levelNumber = number, randomState = definition.seed))
+    }
+
+    fun stage(mode: GameMode, number: Int = 1, date: LocalDate = LocalDate.now()): GameState {
+        require(mode != GameMode.LEVELS) { "Stages belong to Flow or Daily" }
+        val definition = requireNotNull(Levels.get(number, mode)) { "Unknown stage: $number" }
+        val seed = definition.seed + if (mode == GameMode.DAILY) date.toEpochDay() * 104729L else 0L
+        return refill(GameState(board = definition.startingBoard(), mode = mode, levelNumber = number,
+            randomState = seed, challengeId = if (mode == GameMode.DAILY) date.toString() else ""))
+    }
 
     fun daily(date: LocalDate): GameState = newGame(
         GameMode.DAILY,
@@ -110,19 +163,70 @@ object GameEngine {
             (0 until BOARD_SIZE).any { column -> canPlace(board, piece, row, column) }
         }
 
-    fun isGameOver(state: GameState): Boolean = !state.isWon && !state.canPulse &&
-        state.tray.filterNotNull().none { fitsAnywhere(state.board, it) }
+    fun fitsAnyRotation(board: List<Int>, piece: Piece): Boolean =
+        (0..3).any { rotation -> fitsAnywhere(board, piece.copy(rotation = rotation)) }
 
-    fun preview(state: GameState, slot: Int, row: Int, column: Int): Set<Int> {
-        val piece = state.tray.getOrNull(slot) ?: return emptySet()
-        if (!canPlace(state.board, piece, row, column)) return emptySet()
-        val board = state.board.toMutableList()
-        piece.shape.cells.forEach { board[(row + it.row) * BOARD_SIZE + column + it.column] = piece.color }
-        return fullLines(board).flatten().toSet()
+    fun isGameOver(state: GameState): Boolean = !state.isWon && (state.isOutOfMoves ||
+        ((state.level != null || !state.canPulse) && state.tray.filterNotNull().none { fitsAnyRotation(state.board, it) }))
+
+    fun rotate(state: GameState, slot: Int): GameState? {
+        if (state.isWon || state.isOutOfMoves || (state.level != null && isGameOver(state))) return null
+        val piece = state.tray.getOrNull(slot) ?: return null
+        return state.copy(tray = state.tray.mapIndexed { index, item ->
+            if (index == slot) piece.copy(rotation = (piece.rotation + 1) % 4) else item
+        })
     }
 
-    fun place(state: GameState, slot: Int, row: Int, column: Int): MoveResult? {
-        if (state.isWon) return null
+    fun canUndo(state: GameState, checkpoint: UndoCheckpoint?): Boolean {
+        if (checkpoint == null || state.isWon || state.undosRemaining == 0) return false
+        if (state.level != null && isGameOver(state)) return false
+        val previous = checkpoint.before
+        return checkpoint.after == state && isValid(previous) && !previous.isWon &&
+            previous.mode == state.mode && previous.challengeId == state.challengeId && previous.levelNumber == state.levelNumber &&
+            (previous.moves + 1).coerceAtMost(MAX_COUNTER) == state.moves && previous.undosRemaining == state.undosRemaining
+    }
+
+    fun undo(state: GameState, checkpoint: UndoCheckpoint?): GameState? {
+        if (!canUndo(state, checkpoint)) return null
+        return checkpoint!!.before.copy(undosRemaining = state.undosRemaining - 1)
+    }
+
+    fun findHint(state: GameState): PlacementHint? {
+        if (state.isWon || state.isOutOfMoves) return null
+        var best: PlacementHint? = null
+        var bestValue = Int.MIN_VALUE
+        state.tray.forEachIndexed { slot, piece ->
+            if (piece == null) return@forEachIndexed
+            val orientations = (0..3).map { piece.copy(rotation = (piece.rotation + it) % 4) }
+                .distinctBy { it.shape.cells }
+            orientations.forEach { oriented ->
+                repeat(BOARD_SIZE) { row ->
+                    repeat(BOARD_SIZE) { column ->
+                        if (canPlace(state.board, oriented, row, column)) {
+                            val board = state.board.toMutableList()
+                            oriented.shape.cells.forEach { cell ->
+                                board[(row + cell.row) * BOARD_SIZE + column + cell.column] = oriented.color
+                            }
+                            val lines = fullLines(board).size
+                            val value = lines * 10000 + oriented.shape.cells.size * 100 +
+                                row + column
+                            if (value > bestValue) {
+                                bestValue = value
+                                best = PlacementHint(slot, row, column, oriented.rotation, lines)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return best
+    }
+
+    fun preview(state: GameState, slot: Int, row: Int, column: Int): Set<Int> =
+        forecast(state, slot, row, column)?.cleared ?: emptySet()
+
+    fun forecast(state: GameState, slot: Int, row: Int, column: Int): PlacementForecast? {
+        if (state.isWon || state.isOutOfMoves) return null
         val piece = state.tray.getOrNull(slot) ?: return null
         if (!canPlace(state.board, piece, row, column)) return null
         val board = state.board.toMutableList()
@@ -132,20 +236,26 @@ object GameEngine {
         val cleared = fullLines.flatten().toSet()
         cleared.forEach { board[it] = 0 }
         val combo = if (fullLines.isEmpty()) 0 else (state.combo + 1).coerceAtMost(99)
-        val points = piece.shape.cells.size * 10L +
+        val earnedPoints = piece.shape.cells.size * 10L +
             fullLines.size * fullLines.size * 100L * combo.coerceAtMost(8)
+        val points = earnedPoints.coerceAtMost(MAX_SCORE - state.score)
+        return PlacementForecast(board, placed, cleared, points, fullLines.size, combo)
+    }
+
+    fun place(state: GameState, slot: Int, row: Int, column: Int): MoveResult? {
+        val forecast = forecast(state, slot, row, column) ?: return null
         val tray = state.tray.toMutableList().apply { set(slot, null) }
         var next = state.copy(
-            board = board,
+            board = forecast.board,
             tray = tray,
-            score = state.score + points,
-            combo = combo,
-            charge = (state.charge + fullLines.size).coerceAtMost(PULSE_CAPACITY),
-            lines = state.lines + fullLines.size,
-            moves = state.moves + 1,
+            score = state.score + forecast.points,
+            combo = forecast.combo,
+            charge = (state.charge + forecast.lineCount).coerceAtMost(PULSE_CAPACITY),
+            lines = (state.lines + forecast.lineCount).coerceAtMost(MAX_COUNTER),
+            moves = (state.moves + 1).coerceAtMost(MAX_COUNTER),
         )
         if (tray.all { it == null }) next = refill(next)
-        return MoveResult(next, cleared, placed, points, fullLines.size)
+        return MoveResult(next, forecast.cleared, forecast.placed, forecast.points, forecast.lineCount)
     }
 
     fun pulseArea(row: Int, column: Int): Set<Int> {
@@ -164,9 +274,9 @@ object GameEngine {
         val cleared = pulseArea(row, column).filter { state.board[it] != 0 }.toSet()
         if (cleared.isEmpty()) return null
         val board = state.board.toMutableList().apply { cleared.forEach { set(it, 0) } }
-        val points = cleared.size * 5L
+        val points = (cleared.size * 5L).coerceAtMost(MAX_SCORE - state.score)
         return MoveResult(
-            state.copy(board = board, score = state.score + points, charge = 0, combo = 0, moves = state.moves + 1),
+            state.copy(board = board, score = state.score + points, charge = 0, combo = 0, moves = (state.moves + 1).coerceAtMost(MAX_COUNTER)),
             cleared,
             emptySet(),
             points,
@@ -178,27 +288,32 @@ object GameEngine {
     fun isValid(state: GameState): Boolean = state.version == 1 &&
         state.board.size == BOARD_SIZE * BOARD_SIZE && state.board.all { it in 0..6 } &&
         state.tray.size == 3 && state.tray.any { it != null } &&
-        state.tray.filterNotNull().all { it.shapeId in Shapes.all.indices && it.color in 1..6 } &&
-        state.score in 0..Long.MAX_VALUE / 2 && state.moves in 0..Int.MAX_VALUE / 2 &&
-        state.lines in 0..Int.MAX_VALUE / 2 && state.combo in 0..99 && state.charge in 0..PULSE_CAPACITY &&
+        state.tray.filterNotNull().all { it.shapeId in Shapes.all.indices && it.color in 1..6 && it.rotation in 0..3 } &&
+        state.score in 0..MAX_SCORE && state.moves in 0..MAX_COUNTER &&
+        state.lines in 0..MAX_COUNTER && state.combo in 0..99 && state.charge in 0..PULSE_CAPACITY &&
+        state.undosRemaining in 0..MAX_UNDOS &&
         fullLines(state.board).isEmpty() &&
         when (state.mode) {
-            GameMode.FLOW -> state.challengeId.isEmpty()
-            GameMode.DAILY -> runCatching { LocalDate.parse(state.challengeId) }.isSuccess
+            GameMode.FLOW -> state.challengeId.isEmpty() && (state.levelNumber == 0 || state.level?.let { state.moves <= it.moveLimit } == true)
+            GameMode.DAILY -> runCatching { LocalDate.parse(state.challengeId) }.isSuccess &&
+                (state.levelNumber == 0 || state.level?.let { state.moves <= it.moveLimit } == true)
+            GameMode.LEVELS -> state.level?.let { state.challengeId.isEmpty() && state.moves <= it.moveLimit } == true
         }
 
     private fun fullLines(board: List<Int>): List<List<Int>> = buildList {
         repeat(BOARD_SIZE) { line ->
-            val row = List(BOARD_SIZE) { line * BOARD_SIZE + it }
-            val column = List(BOARD_SIZE) { it * BOARD_SIZE + line }
-            if (row.all { board[it] != 0 }) add(row)
-            if (column.all { board[it] != 0 }) add(column)
+            if ((0 until BOARD_SIZE).all { board[line * BOARD_SIZE + it] != 0 }) {
+                add(List(BOARD_SIZE) { line * BOARD_SIZE + it })
+            }
+            if ((0 until BOARD_SIZE).all { board[it * BOARD_SIZE + line] != 0 }) {
+                add(List(BOARD_SIZE) { it * BOARD_SIZE + line })
+            }
         }
     }
 
     private fun refill(state: GameState): GameState {
         val random = Random(state.randomState)
-        val shapeLimit = if (state.score < 300) 12 else Shapes.all.size
+        val shapeLimit = state.level?.shapeLimit ?: if (state.score < 300) 12 else Shapes.all.size
         val candidates = (1 until shapeLimit).filter {
             fitsAnywhere(state.board, Piece(it, 1))
         }.ifEmpty { listOf(0) }
@@ -216,6 +331,16 @@ object SnapshotCodec {
 
     fun decode(value: String): GameState? = try {
         json.decodeFromString<GameState>(value).takeIf(GameEngine::isValid)
+    } catch (_: SerializationException) {
+        null
+    } catch (_: IllegalArgumentException) {
+        null
+    }
+
+    fun encodeCheckpoint(checkpoint: UndoCheckpoint): String = json.encodeToString(checkpoint)
+
+    fun decodeCheckpoint(value: String, current: GameState): UndoCheckpoint? = try {
+        json.decodeFromString<UndoCheckpoint>(value).takeIf { GameEngine.canUndo(current, it) }
     } catch (_: SerializationException) {
         null
     } catch (_: IllegalArgumentException) {
